@@ -1,20 +1,40 @@
 # 安卓端"我的声音"应用 — 实现方案探讨
 
 > 目标：做一个安卓手机端应用，用**用户自己的声音**生成内容（读故事、读文章等）。
-> 桌面版（macOS, v0.5.0）已支持 Qwen TTS / Qwen CustomVoice / Chatterbox / Kokoro / Whisper 等模型，本文探讨安卓端如何落地。
+> 桌面版（macOS, v0.5.0）的 **Voicebox** 页已跑通完整闭环：创建/导入 voice profile → 选模型（Qwen3-TTS 1.7B 等）→ 生成语音。本文探讨如何把这套体验落到安卓端。
 
 ---
 
-## 1. 先澄清模型选型：VoiceBox 不是可行选项
+## 2026-07 更新：两条端侧路线 A/B
 
-- **Meta Voicebox**：只发了论文，**权重从未开源**，无法使用。
-- **Microsoft VibeVoice**（名字容易混淆）：偏长音频/播客多说话人合成，模型大（1.5B+），不适合手机端。
-- 实际可用的"用自己声音"（零样本克隆）开源方案，和桌面版生态一致：
+最新调研（2026-07）带来两个关键变化：
+
+1. **Qwen3-TTS 有了 GGUF/llama.cpp 推理路径**（HaujetZhao/Qwen3-TTS-GGUF、qwen3-tts.cpp、Serveurperso 现成 GGUF 权重）：LLM 部分走 llama.cpp（CPU/Vulkan/Metal），tokenizer/vocoder 走 ONNX Runtime，支持流式合成（延迟可至 ~300ms，12.5Hz tokenizer）。llama.cpp 在安卓上成熟（CPU + Adreno Vulkan），**Qwen3-TTS 0.6B 量化版上手机值得实测**——但尚无公开安卓 RTF 数据。
+2. **sherpa-onnx 克隆模型扩充**：除 ZipVoice 外，PocketTTS（flow-matching，更轻）也支持参考音频克隆；TTS 家族达 7 个（VITS/Matcha/Kokoro/Kitten/ZipVoice/PocketTTS/Supertonic）。
+
+**架构含义：Voicebox 音色档案可以两端通用。** voice profile 本质是"参考音频 + 参考文本 + 元数据"。若安卓端也跑 Qwen3-TTS（0.6B 量化），同一 profile 在 Mac 和手机上还原出**同一个声音**，导出/导入或云同步即可打通两端；用 ZipVoice 则音色会有模型间差异。
+
+| M0 实测对比 | 路线 1：sherpa-onnx + ZipVoice/PocketTTS | 路线 2：llama.cpp + Qwen3-TTS 0.6B GGUF |
+|---|---|---|
+| 安卓集成成熟度 | ✅ 官方 AAR，端到端已验证 | ⚠️ 自行组装（llama.cpp JNI + ONNX vocoder） |
+| 与桌面版音色一致 | ❌ 不同模型 | ✅ 同家族，profile 两端通用 |
+| 速度 | ✅ 已知 RTF≈1（旗舰 CPU） | ❓ 需实测（q4 量化 + Vulkan） |
+| 流式 | 批式为主 | ✅ 原生流式，~300ms 延迟 |
+
+**决策规则**：路线 2 在目标机型上 RTF ≤ 2（配合整章后台预生成）→ 首选路线 2，两端一个生态；否则退回路线 1，profile 内保留参考音频，接受音色差异。
+
+---
+
+## 1. 模型选型说明
+
+> 注：桌面版的 "Voicebox" 是应用内的音色管理功能，与 Meta 的 Voicebox 模型无关。后者只发了论文、权重从未开源，不在选型范围内。
+
+可用的"用自己声音"（零样本克隆）开源方案，与桌面版生态一致：
 
 | 模型 | 克隆能力 | 体积 | 端侧可行性 |
 |---|---|---|---|
 | **ZipVoice (distill, int8)** | ✅ 零样本克隆 | ~几百 MB | ✅ **sherpa-onnx 已官方支持安卓端到端**，Pixel 10 Pro CPU 实测 RTF≈1.0 |
-| **Qwen3-TTS 0.6B Base** | ✅ 3 秒音频克隆 | 2.5 GB | ⚠️ 偏重，旗舰机勉强，需 vLLM-Omni/自行移植 |
+| **Qwen3-TTS 0.6B Base** | ✅ 3 秒音频克隆 | 2.5 GB（GGUF q4 后约 1 GB 内） | ⚠️ llama.cpp GGUF 路径已出现（见顶部 2026-07 更新），旗舰机值得实测 |
 | **Qwen3-TTS 1.7B / CustomVoice** | ✅（1.7B）/ 预置音色（CustomVoice） | 4.5 GB / 较小 | ❌ 服务端为主 |
 | **Chatterbox TTS** | ✅ 参考音频克隆 | ~1 GB | ⚠️ 无成熟安卓移植，服务端为主 |
 | **Kokoro 82M** | ❌ 只有预置音色 | ~300 MB | ✅ 端侧很快，可做兜底/预览 |
@@ -87,7 +107,7 @@
 
 | 阶段 | 内容 | 验证目标 |
 |---|---|---|
-| M0 PoC（1 周） | sherpa-onnx demo 集成 ZipVoice，用自己 20 秒录音克隆合成一段话 | 在自己手机上验证克隆相似度和 RTF 是否可接受 |
+| M0 PoC（1~2 周） | 两条路线各搭 demo：① sherpa-onnx + ZipVoice/PocketTTS；② llama.cpp + Qwen3-TTS 0.6B GGUF。用同一段 20 秒录音 A/B 对比 | 克隆相似度、中文效果、RTF、发热；按"决策规则"定路线 |
 | M1 MVP | 注册流程 + 粘贴文本朗读 + 后台整章生成 + 基本播放器 | 完整"用我的声音读故事"闭环 |
 | M2 | 故事库/epub、多音色档案、导出音频、Kokoro 快速预览 | 日常可用 |
 | M3 | 可选服务端（Mac 局域网模式或云端 Qwen3-TTS）提升音质 | 音质对齐桌面版 |
@@ -111,5 +131,9 @@
 
 ### 参考链接
 - sherpa-onnx TTS 文档：https://k2-fsa.github.io/sherpa/onnx/index.html
+- sherpa-onnx TTS 模型家族总览：https://deepwiki.com/k2-fsa/sherpa-onnx/3.2-text-to-speech-(tts)
 - ZipVoice 安卓克隆支持（issue #3439）：https://github.com/k2-fsa/sherpa-onnx/issues/3439
 - Qwen3-TTS 开源仓库：https://github.com/QwenLM/Qwen3-TTS
+- Qwen3-TTS GGUF/llama.cpp 推理：https://github.com/HaujetZhao/Qwen3-TTS-GGUF
+- qwen3-tts.cpp（组件级移植 + GGUF 转换脚本）：https://github.com/predict-woo/qwen3-tts.cpp
+- 现成 GGUF 权重：https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF
