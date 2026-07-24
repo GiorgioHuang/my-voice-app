@@ -5,7 +5,58 @@
 
 ---
 
-## ✅ 已定路线（2026-07-23）：前后端分离
+## ✅ 桌面版调研（2026-07-23）：后端已经存在，不用自己写
+
+桌面版就是开源项目 [jamiepine/voicebox](https://github.com/jamiepine/voicebox)（Tauri + React 前端，**FastAPI Python 后端**，SQLite）。读完源码后结论：**我们计划自建的后端它已经全部实现了**——
+
+- **API 齐全**（`:17493`，OpenAPI 文档在 `/docs`）：
+  - `/profiles` — 音色档案 CRUD（就是 Voicebox 页的数据）
+  - `/generate` — 合成（内部自动分句 `generate_chunked`，支持长文本）；`/generate/{id}/status`、`/cancel`、`/retry`
+  - `/generate/stream` — 流式 WAV，不落盘
+  - `/stories` — **故事功能已内建**（story + items 数据模型、音频导出）
+  - `/transcribe`（Whisper）、`/models`、`/events`（SSE 进度）、任务管理
+- **局域网模式现成**：`--host 0.0.0.0` 官方支持（"use 0.0.0.0 for remote access"）
+- **云部署现成**：官方 Dockerfile + docker-compose（CPU/ROCm，CUDA 走 PyTorch 后端）
+- **官方 Roadmap 里就有 "Mobile companion — Control Voicebox from your phone"**：做安卓客户端与上游方向一致，甚至可以贡献回去
+
+### 因此项目范围收敛为：只做 Android 客户端（纯 API client）
+
+```
+Android App（Kotlin/Compose） ──HTTP──▶ Voicebox 后端（Mac 局域网 / Docker 云端，同一 API）
+```
+
+需要自己补的缺口只有三个：
+
+| 缺口 | 说明 | 方案 |
+|---|---|---|
+| **鉴权** | 本地 API 无 token，直接暴露公网不可行 | 首选 **Tailscale/WireGuard**：手机⇄家里 Mac 组网，加密+免公网暴露+出门也能连，零代码改动；长期可给上游提 API key PR |
+| **发现/配对** | 无 mDNS 广播，手机需手输 `ip:port` | MVP 手输/二维码分享 URL；后续加 NSD 扫描或贡献上游 |
+| **音频格式** | 输出 WAV，移动网络偏大 | 客户端下载后本地转码缓存（AAC），或上游加 Opus 输出参数 |
+
+### Android 客户端功能映射
+
+| 客户端功能 | 对接端点 |
+|---|---|
+| 连接设置（URL+Tailscale 引导） | `/health` 连通性检测 |
+| 音色列表 / 录音注册 | `GET/POST /profiles`（录音端做 VAD 裁剪后上传） |
+| 快速朗读（粘贴文本） | `POST /generate/stream` → ExoPlayer 边下边播 |
+| 故事库 / 整章生成 | `/stories` + `/generate` + SSE/轮询进度 |
+| 离线收听 | 生成结果下载→本地缓存（Room 索引），无网播缓存 |
+
+### 修订后里程碑（大幅简化）
+
+| 阶段 | 内容 |
+|---|---|
+| M0（1~2 天） | Mac 上 `--host 0.0.0.0` 启动 Voicebox，手机同 WiFi 下用 HTTP 客户端直接调 `/profiles`、`/generate` 验证全链路；顺手验证 Tailscale 外网可达 |
+| M1 MVP（2~3 周） | Android 客户端：连接设置 → 音色列表/录音注册 → 粘贴文本朗读 → 故事整章生成+进度 → 本地缓存播放 |
+| M2 | 云端 Docker 部署选项、epub 导入、导出 M4B、体验打磨 |
+| M3（可选） | 向上游贡献：API key 鉴权、mDNS 广播、Opus 输出 |
+
+---
+
+## 前期探讨记录（历史保留）
+
+## ~~已定路线（2026-07-23）：前后端分离~~（当天由下文桌面版调研进一步收敛）
 
 **决策：手机只做输入/输出（瘦客户端），声音处理全部放后端（Mac 或云服务器）。** 端侧推理（下文方案 A/C 及两条端侧路线）暂不做，仅作为未来备选保留。理由：端侧即使跑通 0.6B 量化版，发热/耗电/GB 级模型下载对用户都不友好，且音质上限低于桌面版在用的 Qwen3-TTS 1.7B。
 
