@@ -23,6 +23,9 @@ interface VoiceboxApi {
 
     @GET("history/{id}")
     suspend fun generation(@Path("id") id: String): Generation
+
+    @GET("models/status")
+    suspend fun modelStatus(): ModelStatusListResponse
 }
 
 object ApiClient {
